@@ -204,7 +204,8 @@ int get_file_crc(const char* filenameinzip, void *buf, unsigned long size_buf, u
     return err;
 }
 
-int _compress(const char** srcs, int src_num, const char* dst, int level, const char* password, int exclude_path, PyObject* progress)
+
+int _compress(const char** srcs, int src_num, const char** names, const char* dst, int level, const char* password, int exclude_path, PyObject* progress)
 {
     zipFile zf = NULL;
     int size_buf = WRITEBUFFERSIZE;
@@ -280,9 +281,8 @@ int _compress(const char** srcs, int src_num, const char* dst, int level, const 
             if (lastslash != NULL)
                 savefilenameinzip = lastslash + 1; // base filename follows last slash.
         }
-
-        /* Add to zip file */
-        err = zipOpenNewFileInZip3_64(zf, savefilenameinzip, &zi,
+        
+        err = zipOpenNewFileInZip3_64(zf, names[i], &zi,
                     NULL, 0, NULL, 0, NULL /* comment*/,
                     (level != 0) ? Z_DEFLATED : 0, level, 0,
                     /* -MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY, */
@@ -367,12 +367,14 @@ int _compress(const char** srcs, int src_num, const char* dst, int level, const 
 static PyObject *py_compress(PyObject *self, PyObject *args)
 {
     int src_len, dst_len, pass_len, level, res;
+    int name_len;
     const char * src;
+    const char * name;
     const char * dst;
     const char * pass;
 
-    if (!PyArg_ParseTuple(args, "z#z#z#i", &src, &src_len, &dst, &dst_len, &pass, &pass_len, &level)) {
-        return PyErr_Format(PyExc_ValueError, "expected arguments are compress(src, dst, pass, level)");
+    if (!PyArg_ParseTuple(args, "z#z#z#z#i", &src, &src_len, &name, &name_len, &dst, &dst_len, &pass, &pass_len, &level)) {
+        return PyErr_Format(PyExc_ValueError, "expected arguments are compress(src, name, dst, pass, level)");
     }
 
     if (src_len < 1) {
@@ -391,7 +393,7 @@ static PyObject *py_compress(PyObject *self, PyObject *args)
         pass = NULL;
     }
 
-    res = _compress(&src, 1, dst, level, pass, 1, NULL);
+    res = _compress(&src, 1, &name, dst, level, pass, 1, NULL);
 
     if (res != ZIP_OK) {
         return pyerr_msg;
@@ -405,7 +407,9 @@ static PyObject *py_compress_multiple(PyObject *self, PyObject *args)
     int i;
     int src_len, dst_len, pass_len, level, res;
     PyObject * src;
+    PyObject * name;
     char ** srcs;
+    char ** names;
     const char * dst;
     const char * pass;
 
@@ -414,8 +418,8 @@ static PyObject *py_compress_multiple(PyObject *self, PyObject *args)
 
     PyObject * progress_cb_obj = NULL;
 
-    if (!PyArg_ParseTuple(args, "Oz#z#i|O", &src, &dst, &dst_len, &pass, &pass_len, &level, &progress_cb_obj)) {
-        return PyErr_Format(PyExc_ValueError, "expected arguments are compress([src], dst, pass, level, <progress>)");
+    if (!PyArg_ParseTuple(args, "OOz#z#i|O", &src, &name, &dst, &dst_len, &pass, &pass_len, &level, &progress_cb_obj)) {
+        return PyErr_Format(PyExc_ValueError, "expected arguments are compress([src],[name], dst, pass, level, <progress>)");
     }
 
     src_len = PyList_Size(src);
@@ -443,7 +447,7 @@ static PyObject *py_compress_multiple(PyObject *self, PyObject *args)
     }
 
     srcs = (char **)malloc(src_len * sizeof(char *));
-
+    names = (char **)malloc(src_len * sizeof(char *));
     if (srcs == NULL) {
         return PyErr_NoMemory();
     }
@@ -461,7 +465,20 @@ static PyObject *py_compress_multiple(PyObject *self, PyObject *args)
         Py_XDECREF(str_obj);
     }
 
-    res = _compress((const char **)srcs, src_len, dst, level, pass, 1, progress_cb_obj);
+    for (i = 0; i < src_len; i++) {
+        str_obj = Py_BuildValue("(O)", PyList_GetItem(name, i));
+        if (args == NULL) {
+            return PyErr_Format(PyExc_ValueError, "could not convert src to char*");
+        }
+        if (!PyArg_ParseTuple(str_obj, "s", &tmp)) {
+            Py_XDECREF(str_obj);
+        };
+
+        names[i] = strdup(tmp);
+        Py_XDECREF(str_obj);
+    }
+
+    res = _compress((const char **)srcs, src_len, (const char **)names, dst, level, pass, 1, progress_cb_obj);
 
     // cleanup free up heap allocated memory
     for (i = 0; i < src_len; i++) {
